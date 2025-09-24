@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Search · Race Guard Demo',
+  title: 'Search Demo',
   description: 'Responsive search UI with race-condition protection.',
 };
 

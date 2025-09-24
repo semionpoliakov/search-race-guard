@@ -1,239 +1,140 @@
 'use client';
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import SearchInput from '@/components/SearchInput';
-import ResultsList from '@/components/ResultsList';
+import { ResultsList } from '@/components/ResultsList/ResultsList';
+import { SearchInput } from '@/components/SearchInput/SearchInput';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
-import { useCancelableFetch } from '@/hooks/useCancelableFetch';
-import type { SearchResult } from '@/lib/searchApi';
-import { fetchSearchResults } from '@/lib/searchApi';
+import { useSearch } from '@/hooks/useSearch';
 import type { SearchStatus } from '@/lib/searchTypes';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useEffect, useId, useRef, useState } from 'react';
 import styles from './SearchClient.module.css';
 
-const RESULT_LIMIT = 10;
-const DEBOUNCE_DELAY = 300;
-
-const statusAnnouncements: Record<SearchStatus, string> = {
-  idle: 'Enter a query to search.',
-  loading: 'Searching, please wait.',
-  success: 'Results updated.',
-  error: 'Search failed. You can retry.',
-  'no-results': 'No results found.',
-};
+const DEBOUNCE_DELAY_MS = 300;
 
 interface SearchClientProps {
   initialQuery: string;
 }
 
-const trimQuery = (value: string) => value.trim();
-
-const getErrorMessage = (error: unknown) => {
-  if (error instanceof Error && error.message) {
-    return error.message;
+const statusMessage = (status: SearchStatus) => {
+  switch (status) {
+    case 'idle':
+      return 'Enter a query to search.';
+    case 'loading':
+      return 'Searching...';
+    case 'success':
+      return 'Results updated.';
+    case 'error':
+      return 'Search failed. Please try again.';
+    case 'no-results':
+      return 'No results found.';
+    default:
+      return '';
   }
-
-  if (typeof error === 'object' && error !== null) {
-    const maybeMessage = (error as { message?: unknown }).message;
-    if (typeof maybeMessage === 'string' && maybeMessage) {
-      return maybeMessage;
-    }
-  }
-
-  return 'Something went wrong.';
 };
 
-export default function SearchClient({ initialQuery }: SearchClientProps) {
+function getStatus({ debouncedQuery, loading, error, resultsLength }: {
+  debouncedQuery: string;
+  loading: boolean;
+  error: unknown;
+  resultsLength: number;
+}): SearchStatus {
+  if (!debouncedQuery) {
+    return 'idle'
+  };
+
+  if (loading) {
+    return 'loading'
+  };
+
+  if (error) {
+    return 'error'
+  };
+
+  return resultsLength === 0 ? 'no-results' : 'success';
+}
+
+export const SearchClient = ({ initialQuery }: SearchClientProps) => {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const normalizedInitialQuery = trimQuery(initialQuery);
+  const [inputValue, setInputValue] = useState(initialQuery);
 
-  const [query, setQuery] = useState(initialQuery);
-  const [status, setStatus] = useState<SearchStatus>(() =>
-    normalizedInitialQuery ? 'loading' : 'idle',
-  );
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  const debouncedQuery = useDebouncedValue(query, DEBOUNCE_DELAY);
-  const { run, cancel } = useCancelableFetch();
-  const lastQueryRef = useRef<string>(normalizedInitialQuery);
-  const lastSyncedUrlRef = useRef<string>(normalizedInitialQuery);
-  const isSyncingFromInputRef = useRef(false);
-  const skipNextDebounceRef = useRef(false);
+  const debouncedQuery = useDebouncedValue(inputValue.trim(), DEBOUNCE_DELAY_MS);
   const statusMessageId = useId();
 
+  const { results, loading, error, refetch } = useSearch(
+    debouncedQuery,
+  );
+
   useEffect(() => {
-    if (!normalizedInitialQuery) {
-      inputRef.current?.focus();
-    }
-    return () => {
-      cancel();
+    const urlQuery = searchParams.get('q') ?? '';
+    setInputValue((prev) => (prev === urlQuery ? prev : urlQuery));
+  }, [searchParams]);
+
+  useEffect(() => {
+    const currentQuery = searchParams.get('q') ?? '';
+    const nextQuery = debouncedQuery;
+
+    if (currentQuery === nextQuery) {
+      return
     };
-  }, [cancel, normalizedInitialQuery]);
 
-  const resetSearchState = useCallback(() => {
-    cancel();
-    lastQueryRef.current = '';
-    setResults([]);
-    setErrorMessage(null);
-    setStatus('idle');
-  }, [cancel]);
+    const params = new URLSearchParams(searchParams);
 
-  const runSearch = useCallback(
-    async (normalized: string) => {
-      lastQueryRef.current = normalized;
-      setErrorMessage(null);
-      setStatus('loading');
-
-      try {
-        const payload = await run((signal) =>
-          fetchSearchResults(normalized, { limit: RESULT_LIMIT, signal }),
-        );
-
-        if (!payload || lastQueryRef.current !== normalized) {
-          return;
-        }
-
-        if (payload.results.length === 0) {
-          setResults([]);
-          setStatus('no-results');
-          return;
-        }
-
-        setResults(payload.results);
-        setStatus('success');
-      } catch (error) {
-        if (lastQueryRef.current !== normalized) {
-          return;
-        }
-        setErrorMessage(getErrorMessage(error));
-        setStatus('error');
-      }
-    },
-    [run],
-  );
-
-  const syncUrlFromInput = useCallback(
-    (normalizedQuery: string) => {
-      if (lastSyncedUrlRef.current === normalizedQuery) {
-        return;
-      }
-
-      isSyncingFromInputRef.current = true;
-      lastSyncedUrlRef.current = normalizedQuery;
-
-      if (normalizedQuery) {
-        router.replace(`${pathname}?q=${encodeURIComponent(normalizedQuery)}`, {
-          scroll: false,
-        });
-      } else {
-        router.replace(pathname, { scroll: false });
-      }
-    },
-    [pathname, router],
-  );
-
-  const rawUrlQuery = searchParams.get('q') ?? '';
-  const normalizedUrlQuery = trimQuery(rawUrlQuery);
-
-  // Слежение за изменениями в URL (Back/Forward, прямой ввод).
-  useEffect(() => {
-    const rawValue = rawUrlQuery;
-    const normalizedValue = normalizedUrlQuery;
-
-    if (isSyncingFromInputRef.current) {
-      isSyncingFromInputRef.current = false;
-      lastSyncedUrlRef.current = normalizedValue;
-      return;
+    if (!nextQuery) {
+      params.delete('q');
+    } else {
+      params.set('q', nextQuery);
     }
 
-    lastSyncedUrlRef.current = normalizedValue;
+    const queryString = params.toString();
 
-    if (rawValue !== query) {
-      skipNextDebounceRef.current = true;
-      setQuery(rawValue);
-    }
+    router.replace(queryString ? `${pathname}?${queryString}` : pathname, { scroll: false });
+  }, [debouncedQuery, pathname, router, searchParams]);
 
-    if (!normalizedValue) {
-      skipNextDebounceRef.current = true;
-      resetSearchState();
-      return;
-    }
+  const status = getStatus({ debouncedQuery, loading, error, resultsLength: results.length })
 
-    skipNextDebounceRef.current = true;
-    void runSearch(normalizedValue);
-  }, [normalizedUrlQuery, query, rawUrlQuery, resetSearchState, runSearch]);
+  const isLoading = status === 'loading';
+  const hasError = status === 'error';
 
-  // Обработка пользовательского ввода после дебаунса.
-  useEffect(() => {
-    if (skipNextDebounceRef.current) {
-      skipNextDebounceRef.current = false;
-      return;
-    }
+  const handleClear = () => {
+    setInputValue('');
+  };
 
-    const normalized = trimQuery(debouncedQuery);
-
-    if (!normalized) {
-      syncUrlFromInput('');
-      resetSearchState();
-      return;
-    }
-
-    syncUrlFromInput(normalized);
-    void runSearch(normalized);
-  }, [debouncedQuery, resetSearchState, runSearch, syncUrlFromInput]);
-
-  const handleInputChange = useCallback((value: string) => {
-    setQuery(value);
-  }, []);
-
-  const handleRetry = useCallback(() => {
-    if (lastQueryRef.current) {
-      void runSearch(lastQueryRef.current);
-    }
-  }, [runSearch]);
-
-  const statusMessage = useMemo(() => {
-    if (status === 'error' && errorMessage) {
-      return errorMessage;
-    }
-
-    return statusAnnouncements[status];
-  }, [errorMessage, status]);
+  const handleChange = (value: string) => {
+    setInputValue(value)
+  }
 
   return (
     <main className={styles.page}>
       <section className={styles.panel}>
-        <h1 className={styles.title}>Search Library</h1>
+        <h1 className={styles.title}>Search</h1>
         <p className={styles.subtitle}>
-          Type to explore our mock catalogue. Requests are debounced and fully
-          race-safe.
+          Type to explore a catalog.
         </p>
+
         <SearchInput
           ref={inputRef}
-          value={query}
-          onChange={handleInputChange}
-          isLoading={status === 'loading'}
-          hasError={status === 'error'}
+          value={inputValue}
+          onChange={handleChange}
+          onClear={handleClear}
+          isLoading={isLoading}
+          hasError={hasError}
           statusMessageId={statusMessageId}
         />
-        <div
-          id={statusMessageId}
-          className={styles.status}
-          aria-live="polite"
-          role="status"
-        >
-          {statusMessage}
+
+        <div id={statusMessageId} className={styles.status} aria-live="polite" role="status">
+          {statusMessage(status)}
         </div>
+
         <ResultsList
+          query={debouncedQuery}
           results={results}
           status={status}
-          errorMessage={errorMessage}
-          onRetry={handleRetry}
+          errorMessage={error}
+          onRetry={refetch}
         />
       </section>
     </main>

@@ -82,8 +82,6 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const rawQuery = (searchParams.get('q') ?? '').trim();
-  const limitParam = Number.parseInt(searchParams.get('limit') ?? '10', 10);
-  const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, DATASET.length) : 10;
 
   await wait(RESPONSE_DELAY_MS);
 
@@ -101,7 +99,7 @@ export async function GET(request: Request) {
   const lowered = rawQuery.toLowerCase();
   const filtered = DATASET.filter((item) =>
     item.title.toLowerCase().includes(lowered) || item.snippet.toLowerCase().includes(lowered),
-  ).slice(0, limit);
+  );
 
   return NextResponse.json({ results: filtered });
 }

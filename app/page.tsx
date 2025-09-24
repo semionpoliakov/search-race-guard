@@ -1,4 +1,4 @@
-import SearchClient from './search/SearchClient';
+import { SearchClient } from './search/SearchClient';
 
 type SearchParamsShape = Record<string, string | string[] | undefined>;
 
