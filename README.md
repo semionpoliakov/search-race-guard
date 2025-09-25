@@ -2,6 +2,10 @@
 
 Демонстрационное приложение на Next.js (App Router) и React 19: поисковое поле с дебаунсом, синхронизацией URL и защитой от гонок запросов.
 
+## Ссылка на приложение
+
+https://search-race-guard.vercel.app/
+
 ## Стек
 
 - Next.js 15 (App Router)
